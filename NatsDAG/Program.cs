@@ -22,7 +22,7 @@ class DAGNode
 
         if (dependencyCounts != null && dependencyCounts.ContainsKey(nodeName))
         {
-            // Channel を作成（非同期キュー）
+            // 非同期キュー（Channel）を作成
             dependencyChannel = Channel.CreateUnbounded<string>();
         }
     }
@@ -75,10 +75,11 @@ class Program
     {
         await using var connection = new NatsConnection(new NatsOpts { Url = "nats://localhost:4222" });
 
-        // DAG の依存関係のカウント（D は B と C の 2 つのメッセージを待つ）
+        // DAG の依存関係のカウント（D は B と C の 2 つのメッセージを待つ, E は D を待つ）
         var dependencyCounts = new Dictionary<string, int>
         {
-            { "D", 2 } // D は B と C の 2 つの処理完了を待つ
+            { "D", 2 }, // D は B と C の 2 つの処理完了を待つ
+            { "E", 1 }  // E は D の処理完了を待つ
         };
 
         // DAG ノードの作成
@@ -87,7 +88,8 @@ class Program
             { "A", new DAGNode("A", new List<string> { "B", "C" }, connection) },
             { "B", new DAGNode("B", new List<string> { "D" }, connection) },
             { "C", new DAGNode("C", new List<string> { "D" }, connection) },
-            { "D", new DAGNode("D", new List<string>(), connection, dependencyCounts) } // 依存関係あり
+            { "D", new DAGNode("D", new List<string> { "E" }, connection, dependencyCounts) }, // 依存関係あり
+            { "E", new DAGNode("E", new List<string>(), connection, dependencyCounts) } // 依存関係あり
         };
 
         // 各ノードを非同期で実行
