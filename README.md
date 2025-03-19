@@ -555,3 +555,199 @@ static async Task Main()
 ---
 
 この方法でどうでしょう？ 🛠️💡
+
+
+その通りですね！  
+せっかく **NATS や Garnet, RabbitMQ** などの **分散メッセージングシステム** を使うなら、**ノードを別の物理サーバー（あるいはコンテナ）で実行** できるようにしたいですよね。  
+
+つまり、  
+✅ **各ノード（A, B, C, D, E）を別の物理サーバーまたはコンテナで動作させる**  
+✅ **メッセージングシステム（NATS, Garnet, RabbitMQ）をブローカーとして利用し、各ノードが分散実行されるようにする**  
+
+これを実現する方法を提案します！🚀  
+
+---
+
+# **💡 どのように分散実行するか？**
+### **1️⃣ 各ノードを別プロセスとして動作させる**
+現在は `Program.cs` 内で全ノードを1つのプロセス内で実行していますが、  
+**各ノードを「独立したプロセス」として起動し、分散配置できるように変更** します。
+
+### **2️⃣ 各ノードを別の物理サーバーまたはコンテナで実行**
+**Docker** を利用すれば、**各ノードをコンテナ化し、それぞれ異なるサーバーで実行可能** にできます。  
+あるいは、物理サーバー上で直接 `dotnet run` しても OK。
+
+### **3️⃣ メッセージングシステムを中央ブローカーとして利用**
+✅ **NATS, Garnet, RabbitMQ などをクラウドやネットワーク上の中央サーバーで実行**  
+✅ 各ノードは **メッセージブローカーを通じて通信** する  
+✅ これにより **物理サーバーが異なっていても、疎結合で処理可能** になる  
+
+---
+
+# **🛠 実装方法**
+## **1️⃣ 各ノードを独立したプロセスで動作させる**
+現在の `Program.cs` では **すべてのノードを 1 つのアプリで起動** しています。  
+これを、各ノードごとに個別のプロセスとして動かせるように変更します。
+
+### **📌 `NodeProcess.cs`（共通ノード処理クラス）**
+```csharp
+using System;
+using System.Text;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
+
+class NodeProcess
+{
+    static async Task Main(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            Console.WriteLine("Usage: dotnet run <NodeName>");
+            return;
+        }
+
+        string nodeName = args[0];
+
+        var config = new ConfigurationBuilder().AddJsonFile("appsettings.json").Build();
+        var messagingService = MessagingServiceFactory.CreateMessagingService(config);
+
+        var dagConfig = DagConfig.LoadFromConfig(config);
+        var node = new DAGNode(nodeName, dagConfig.GetNextNodes(nodeName), messagingService);
+
+        await node.StartAsync();
+
+        Console.WriteLine($"[{nodeName}] Running. Press Enter to exit.");
+        Console.ReadLine();
+    }
+}
+```
+✅ これを使うことで、各ノードを **別プロセスで起動できる**。
+
+### **📌 実行方法（各サーバーで実行）**
+#### **サーバー1（A）**
+```sh
+dotnet run A
+```
+#### **サーバー2（B）**
+```sh
+dotnet run B
+```
+#### **サーバー3（C）**
+```sh
+dotnet run C
+```
+#### **サーバー4（D）**
+```sh
+dotnet run D
+```
+#### **サーバー5（E）**
+```sh
+dotnet run E
+```
+→ こうすることで、各ノードが **異なるサーバー上で独立して動作** できる！ 🚀
+
+---
+
+## **2️⃣ メッセージングサーバーを独立させる**
+現在の `NATS` や `Garnet` は **ローカルで動作** していますが、  
+これを **クラウド or 物理サーバー上の中央ブローカー** として運用します。
+
+### **📌 NATS をサーバーで起動**
+#### **物理サーバー上で実行**
+```sh
+nats-server -js
+```
+#### **Docker を利用**
+```sh
+docker run --rm -p 4222:4222 nats
+```
+### **📌 Garnet をサーバーで起動**
+```sh
+docker run --rm -p 6379:6379 ghcr.io/microsoft/garnet:latest
+```
+### **📌 RabbitMQ をサーバーで起動**
+```sh
+docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
+```
+
+---
+## **3️⃣ 各ノードをサーバーごとにコンテナ化**
+各ノードを **コンテナ化** して、異なる物理サーバーやクラウド環境で実行できるようにする。
+
+### **📌 `Dockerfile`**
+```dockerfile
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY . .
+ENTRYPOINT ["dotnet", "NodeProcess.dll"]
+```
+
+### **📌 `docker-compose.yml`**
+```yaml
+version: '3.9'
+services:
+  nats:
+    image: nats
+    ports:
+      - "4222:4222"
+  
+  node-a:
+    build: .
+    command: ["A"]
+    depends_on:
+      - nats
+  
+  node-b:
+    build: .
+    command: ["B"]
+    depends_on:
+      - nats
+
+  node-c:
+    build: .
+    command: ["C"]
+    depends_on:
+      - nats
+
+  node-d:
+    build: .
+    command: ["D"]
+    depends_on:
+      - nats
+
+  node-e:
+    build: .
+    command: ["E"]
+    depends_on:
+      - nats
+```
+### **📌 コンテナを起動**
+```sh
+docker-compose up -d
+```
+✅ これで各ノードが **分散環境で独立して動作可能** に！
+
+---
+
+## **🔚 まとめ**
+| #  | 改善点 | 内容 |
+|----|--------|------|
+| ✅ | **各ノードを別プロセス / サーバーで実行可能に** | `dotnet run A` などで **物理サーバーごとに実行** |
+| ✅ | **メッセージングサーバーを独立** | NATS / Garnet / RabbitMQ を **中央ブローカーとして利用** |
+| ✅ | **Docker + コンテナ化** | 各ノードを **コンテナで分散デプロイ** |
+| ✅ | **スケーラブルな設計** | 新しいノードを追加しやすく、クラウド環境でも動作可能 |
+
+---
+
+## **🚀 次のステップ**
+### **1️⃣ この方法で実装してみる**
+  → **各サーバーで `dotnet run A` などを試して、メッセージングが分散できるか確認**
+### **2️⃣ 必要なら Kubernetes に拡張**
+  → **コンテナオーケストレーション（K8s）で管理**
+### **3️⃣ メッセージの永続化（JetStream / RabbitMQ Durable Queue）**
+  → **クラッシュしてもデータを失わないように改良**
+
+---
+
+これで **異なるサーバーでノードを実行できる** ようになりました！  
+「もう少しこうしたい」「ここがわからない」などあれば、気軽に聞いてください！ 🚀🔥
