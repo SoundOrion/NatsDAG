@@ -751,3 +751,195 @@ docker-compose up -d
 
 これで **異なるサーバーでノードを実行できる** ようになりました！  
 「もう少しこうしたい」「ここがわからない」などあれば、気軽に聞いてください！ 🚀🔥
+
+
+そうですね！🚀  
+**「どのサーバーでどのノードを実行するか？」** を **設定ファイルで管理** できるようにすると、より柔軟な分散処理が可能になります。  
+これにより、**ノードの負荷分散・サーバーの動的スケーリング・障害時のフェイルオーバー** も実現しやすくなります。
+
+---
+
+## **💡 「どのサーバーでどのノードを実行するか？」を設定で管理する**
+現在は `dotnet run A` のように **手動で各ノードを起動** していますが、  
+これを **設定ファイル（JSON / YAML）を利用して、どのサーバーでどのノードを実行するかを管理** できるようにします。
+
+---
+
+## **🛠 1️⃣ 設定ファイル `nodes.json` を作成**
+```json
+{
+  "servers": [
+    {
+      "host": "192.168.1.10",
+      "nodes": ["A"]
+    },
+    {
+      "host": "192.168.1.11",
+      "nodes": ["B", "C"]
+    },
+    {
+      "host": "192.168.1.12",
+      "nodes": ["D"]
+    },
+    {
+      "host": "192.168.1.13",
+      "nodes": ["E"]
+    }
+  ]
+}
+```
+✅ **「このサーバーではどのノードを動かすのか？」を定義できる！**  
+✅ **サーバーの IP（またはホスト名）を指定し、それぞれのノードをどこで実行するか管理可能**  
+✅ **サーバー構成が変わっても JSON を修正するだけで対応できる**  
+
+---
+
+## **🛠 2️⃣ 各サーバーが「自分が実行するべきノード」を判定する**
+各サーバーは **自分の IP アドレスを取得し、それに対応するノードだけを実行** するようにします。
+
+```csharp
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Net;
+using System.Text.Json;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Configuration;
+
+class NodeProcess
+{
+    static async Task Main()
+    {
+        string hostIp = GetLocalIPAddress();  // 現在のサーバーの IP を取得
+        Console.WriteLine($"[INFO] Running on {hostIp}");
+
+        var config = new ConfigurationBuilder().AddJsonFile("nodes.json").Build();
+        var nodesToRun = GetNodesForThisServer(config, hostIp);
+
+        if (nodesToRun.Count == 0)
+        {
+            Console.WriteLine("[WARN] No nodes assigned to this server.");
+            return;
+        }
+
+        Console.WriteLine($"[INFO] Starting nodes: {string.Join(", ", nodesToRun)}");
+
+        var messagingService = MessagingServiceFactory.CreateMessagingService(config);
+        var dagConfig = DagConfig.LoadFromConfig(config);
+
+        var tasks = new List<Task>();
+        foreach (var nodeName in nodesToRun)
+        {
+            var node = new DAGNode(nodeName, dagConfig.GetNextNodes(nodeName), messagingService);
+            tasks.Add(node.StartAsync());
+        }
+
+        await Task.WhenAll(tasks);
+    }
+
+    static string GetLocalIPAddress()
+    {
+        foreach (var ip in Dns.GetHostAddresses(Dns.GetHostName()))
+        {
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                return ip.ToString();
+            }
+        }
+        return "127.0.0.1";
+    }
+
+    static List<string> GetNodesForThisServer(IConfiguration config, string hostIp)
+    {
+        var servers = config.GetSection("servers").Get<List<ServerConfig>>();
+        foreach (var server in servers)
+        {
+            if (server.Host == hostIp)
+            {
+                return server.Nodes;
+            }
+        }
+        return new List<string>();
+    }
+}
+
+class ServerConfig
+{
+    public string Host { get; set; }
+    public List<string> Nodes { get; set; }
+}
+```
+
+✅ **各サーバーが「自分の IP に対応するノード」だけを実行するように改良！**  
+✅ **サーバーが増えた場合も、設定ファイル（`nodes.json`）を修正するだけで対応できる！**  
+✅ **サーバーの役割変更（例: A を別サーバーで実行する）も簡単に！**
+
+---
+
+## **🛠 3️⃣ サーバー構成が変わったら `nodes.json` を修正**
+例えば、ノード `B` を **別のサーバーに移動** したい場合：
+
+### **📌 修正前**
+```json
+{
+  "host": "192.168.1.11",
+  "nodes": ["B", "C"]
+}
+```
+### **📌 修正後**
+```json
+{
+  "host": "192.168.1.14",
+  "nodes": ["B"]
+}
+```
+#### **✅ これで `B` は `192.168.1.14` のサーバーで実行される！**
+**ノードの移動をプログラム変更なしで実現できる！** 🚀
+
+---
+
+## **🛠 4️⃣ サーバーごとに Docker コンテナをデプロイ**
+Docker の **環境変数** を使って、コンテナが「自分の役割を認識」できるようにする。
+
+### **📌 `docker-compose.override.yml`**
+```yaml
+version: '3.9'
+services:
+  node:
+    environment:
+      - NODE_HOST=192.168.1.10
+```
+
+### **📌 `NodeProcess.cs`（環境変数対応）**
+```csharp
+string hostIp = Environment.GetEnvironmentVariable("NODE_HOST") ?? GetLocalIPAddress();
+```
+✅ **サーバー構成を変更するたびに Docker イメージを作り直す必要なし！**  
+✅ **`docker-compose.override.yml` を修正するだけでサーバーの役割変更可能！**
+
+---
+
+## **🚀 まとめ**
+| **改善点** | **内容** |
+|------------|---------|
+| ✅ **ノードの実行場所を設定ファイル (`nodes.json`) で管理** | **どのノードをどのサーバーで動かすかを定義できる** |
+| ✅ **各サーバーが自動で「自分の役割」を判定** | **自分の IP をチェックし、実行すべきノードを決定** |
+| ✅ **サーバーの追加・変更が簡単** | **設定ファイルを修正するだけで対応できる** |
+| ✅ **Docker 環境変数を利用してデプロイを最適化** | **Docker イメージを作り直さなくてもノードの役割を変更可能** |
+
+---
+
+## **🔥 次のステップ**
+1. **この方法で試しに `nodes.json` を使って分散ノードを起動してみる**
+2. **サーバーを増やしたときの動作確認**
+3. **障害時のフェイルオーバーも考慮する**
+   - **「もしサーバー B が落ちたら、C を別のサーバーで実行する」**
+   - **監視 & 自動リカバリー機能の導入（Kubernetes など）**
+
+---
+
+この **「ノードをどのサーバーで動かすかを動的に決定する」** 方法なら、  
+本格的な **分散処理システム** としても **スケールしやすく** なります！🔥  
+
+この設計、どう思いますか？  
+**もっと改善したい点があれば気軽に教えてください！** 🚀
